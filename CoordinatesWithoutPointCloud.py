@@ -9,47 +9,11 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import pyzed.sl as sl
-import os
-
-# Open the camera
-init_params = sl.InitParameters()
-cam = sl.Camera()
-status = cam.open(init_params)
-if status != sl.ERROR_CODE.SUCCESS:
-    print("Camera Open failed:", status)
-    exit(1)
-
-# Get camera info
-cam_info = cam.get_camera_information()
-
-# Get intrinsics for left camera
-calib = cam_info.camera_configuration.calibration_parameters
-left = calib.left_cam
-right = calib.right_cam
-leftFx=left.fx
-leftFy=left.fy
-rightFx=right.fx
-
-CxRight=left.cx
-CyRight=left.cy
-CxLeft=left.cx
-CyLeft=left.cy
-
-cam.close()
-
-
-import time
-print("sleeping for 5 secs")
-time.sleep(5)
-
-
 
 class YOLOv8Node(Node):
     def __init__(self):
         super().__init__('yolov8_detector')
 
-        # Parameters
         self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
         self.declare_parameter('depth_topic', '/zed/zed_node/depth/depth_registered')
         self.declare_parameter('camera_info_topic', '/zed/zed_node/rgb/camera_info')
@@ -64,42 +28,31 @@ class YOLOv8Node(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.show = bool(self.get_parameter('show').value)
 
-        # Load YOLO model
         self.model = YOLO(model_path)
         self.class_names = self.model.names
 
-        # Utils
         self.bridge = CvBridge()
         self.depth_frame = None
 
-        # Intrinsics
-        self.fx = leftFx
-        self.fy = leftFy
-        self.cx = CxLeft
-        self.cy = CyLeft
-        
-
-        # Subscriptions
         self.create_subscription(Image, image_topic, self.callback, 10)
         self.create_subscription(Image, depth_topic, self.depth_callback, 10)
+
+        self.pub = self.create_publisher(Detection2DArray, '/yolo/detections', 10)
         self.create_subscription(CameraInfo, camera_info_topic, self.camera_info_callback, 1)
 
-        # Publisher
-        self.pub = self.create_publisher(Detection2DArray, '/yolo/detections', 10)
-
     def camera_info_callback(self, msg: CameraInfo):
-        """Store intrinsics from ZED camera info"""
-        self.fx = leftFx
-        self.fy = leftFy
-        self.cx = CxLeft
-        self.cy = CyLeft
+        #get intrinsics 
+        self.fx=msg.p[0]
+        self.fy=msg.p[5]
+        self.cx=msg.p[2]
+        self.cy=msg.p[6]
 
     def depth_callback(self, msg):
-        """Convert depth image to cv2 format"""
+        # Convert depth image to cv2
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
     def callback(self, msg:Image):
-        """Main RGB callback for detection"""
+        #Main RGB callback for detection
         if self.fx is None:
             self.get_logger().warn("Waiting for camera intrinsics...")
             return
@@ -124,17 +77,17 @@ class YOLOv8Node(Node):
                 det.bbox.size_x = float(x2 - x1)
                 det.bbox.size_y = float(y2 - y1)
 
-                # Hypothesis with pose
+                # Hypothesis with pose(for detection)
                 hyp = ObjectHypothesisWithPose()
                 hyp.hypothesis.class_id = label
-                hyp.hypothesis.score = conf
+                hyp.hypothesis.score = conf 
 
                 # Depth to 3D
                 if self.depth_frame is not None:
                     u, v = int(det.bbox.center.position.x), int(det.bbox.center.position.y)
                     if 0 <= v < self.depth_frame.shape[0] and 0 <= u < self.depth_frame.shape[1]:
                         dist = float(self.depth_frame[v, u])  # meters
-                        if dist > 0:  # valid depth
+                        if dist > 0:
                             X = (u - self.cx) / self.fx
                             Y = (v - self.cy) / self.fy
                             Z = 1.0
@@ -148,26 +101,22 @@ class YOLOv8Node(Node):
                 det.results.append(hyp)
                 det_array.detections.append(det)
 
-                # GUI drawing
                 if self.show:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                    if hyp.pose.pose.position.z:  # Show 3D coords if available
+                    if hyp.pose.pose.position.z: 
                         X = hyp.pose.pose.position.x
                         Y = hyp.pose.pose.position.y
                         dist = hyp.pose.pose.position.z
-                        display_text = f"{label}  Z={dist:.2f}m  ({X:.2f},{Y:.2f},{dist:.2f})"
-                        #front 
+                        display_text = f"{label}  Z={dist:.2f}m  ({X:.2f},{Y:.2f},{dist:.2f})"  #X->left-right, Y->down-up, Z->forward
                     else:
                         display_text = f"{label}  Z=?"
 
                     cv2.putText(frame, display_text, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Publish detection array
         self.pub.publish(det_array)
 
-        # Show GUI
         if self.show:
             cv2.imshow("YOLOv8 Detections with Depth & 3D", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
