@@ -1,11 +1,13 @@
 """
-This code translates the Cone coordinates and displays it on open cv. Hasn't been verified yet.
+This code translates the Cone coordinates and displays them on OpenCV,
+and plots camera-frame cone positions on demand.
 """
 
 #!/usr/bin/env python3
 import cv2
 import pyzed.sl as sl
 from ultralytics import YOLO
+import matplotlib.pyplot as plt
 
 # ----------------------------
 # Initialize ZED
@@ -36,7 +38,7 @@ depth_map = sl.Mat()
 # ----------------------------
 # Load YOLO model
 # ----------------------------
-model = YOLO("yolov8_best_FineTune.pt")  # replace with your custom model
+model = YOLO("/home/gera/perception/Perception-master/zed-2i_ROS2/depth_perception/yolov8_best_FineTune.pt")
 
 # ----------------------------
 # Main loop
@@ -63,6 +65,9 @@ while True:
         # Run YOLO inference
         results = model(frame_bgr, verbose=False)[0]
 
+        # Store detections for plotting
+        cones_cam_coords = []
+
         for box in results.boxes:
             # Bounding box
             x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -77,6 +82,8 @@ while True:
             success, point = depth_map.get_value(cx, cy)
             if success == sl.ERROR_CODE.SUCCESS and point is not None:
                 cam_X, cam_Y, cam_Z, _ = point
+                X_cm, Z_cm = cam_X * 100, cam_Z * 100
+                cones_cam_coords.append((X_cm, Z_cm, label))
             else:
                 cam_X, cam_Y, cam_Z = 0, 0, 0
 
@@ -95,13 +102,34 @@ while True:
         # Show result
         cv2.imshow("YOLO + ZED 3D", frame_bgr)
 
-    # Exit on keypress
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        # Key handling
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('p') and cones_cam_coords:
+            xs, zs, colors = [], [], []
+            for X_cm, Z_cm, lbl in cones_cam_coords:
+                xs.append(X_cm)
+                zs.append(Z_cm)
+                if "blue" in lbl.lower():
+                    colors.append("blue")
+                elif "yellow" in lbl.lower():
+                    colors.append("gold")
+                else:
+                    colors.append("gray")
+
+            plt.figure()
+            plt.scatter(xs, zs, c=colors, s=40, edgecolors="k")
+            plt.xlabel("X (cm) [sideways]")
+            plt.ylabel("Z (cm) [forward]")
+            plt.title("Detected Cones in Camera Frame")
+            plt.grid(True)
+            plt.axis("equal")
+            plt.show()
+
+        elif key == ord('q'):
+            break
 
 # ----------------------------
 # Cleanup
 # ----------------------------
 zed.close()
 cv2.destroyAllWindows()
-
