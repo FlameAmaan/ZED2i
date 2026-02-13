@@ -12,15 +12,19 @@ import numpy as np
 
 class YOLOv8Node(Node):
     def __init__(self):
-        super().__init__('yolov8_detector')
 
-        self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
+        super().__init__('yolov8_detector')
+        self.fx = None
+        self.fy = None
+        self.cx = None
+        self.cy = None
+
+        self.declare_parameter('image_topic', '/zed/zed_node/rgb/color/rect/image')
         self.declare_parameter('depth_topic', '/zed/zed_node/depth/depth_registered')
-        self.declare_parameter('camera_info_topic', '/zed/zed_node/rgb/camera_info')
-        self.declare_parameter('model_path', '/home/flameamaan/ros2_ws/src/ZED2i/yolov8_best_FineTune.pt')
+        self.declare_parameter('camera_info_topic', '/zed/zed_node/rgb/color/rect/image/camera_info')
+        self.declare_parameter('model_path', '//home/flame/ZED2i/yolov8_best_FineTune.pt')
         self.declare_parameter('conf', 0.25)
         self.declare_parameter('show', True)
-
         image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
         depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
         camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
@@ -52,6 +56,8 @@ class YOLOv8Node(Node):
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
     def callback(self, msg:Image):
+        self.get_logger().info("RGB received")
+
         #Main RGB callback for detection
         if self.fx is None:
             self.get_logger().warn("Waiting for camera intrinsics...")
@@ -104,7 +110,7 @@ class YOLOv8Node(Node):
                 if self.show:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                    if hyp.pose.pose.position.z: 
+                    if hyp.pose.pose.position.z!=0: 
                         X = hyp.pose.pose.position.x
                         Y = hyp.pose.pose.position.y
                         dist = hyp.pose.pose.position.z
