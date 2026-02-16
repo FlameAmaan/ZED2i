@@ -9,6 +9,14 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs
+from geometry_msgs.msg import PointStamped
+from rclpy.duration import Duration
+from rclpy.time import Time
+
+
 
 class YOLOv8Node(Node):
     def __init__(self):
@@ -18,6 +26,20 @@ class YOLOv8Node(Node):
         self.fy = None
         self.cx = None
         self.cy = None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.world_cones = []
+
+        plt.ion()
+        self.fig, self.ax = plt.subplots()
+        self.ax.set_xlabel("X (meters)")
+        self.ax.set_ylabel("Z (meters)")
+        self.ax.set_title("Cone Map (Top View)")
+        self.ax.set_xlim(-5, 5)
+        self.ax.set_ylim(0, 10)
+        self.scatter = self.ax.scatter([], [])
+        self.cone_positions = []
 
         self.declare_parameter('image_topic', '/zed/zed_node/rgb/color/rect/image')
         self.declare_parameter('depth_topic', '/zed/zed_node/depth/depth_registered')
@@ -100,9 +122,34 @@ class YOLOv8Node(Node):
                             Coord = np.array([X, Y, Z])
                             Coord = Coord / np.linalg.norm(Coord) * dist
                             a_x, a_y, a_z = Coord
-                            hyp.pose.pose.position.x = a_x
-                            hyp.pose.pose.position.y = a_y
-                            hyp.pose.pose.position.z = a_z
+                            hyp.pose.pose.position.x = float(a_x)
+                            hyp.pose.pose.position.y = float(a_y)
+                            hyp.pose.pose.position.z = float(a_z)
+                            point_cam = PointStamped()
+                            point_cam.header.frame_id = "zed_camera_center"
+                            point_cam.header.stamp = Time().to_msg()
+
+                            point_cam.point.x = float(a_x)
+                            point_cam.point.y = float(a_y)
+                            point_cam.point.z = float(a_z)
+
+                            try:
+                                point_world = self.tf_buffer.transform(
+                                    point_cam,
+                                    "map",
+                                    timeout=Duration(seconds=0.1)
+                                )
+
+                                wx = point_world.point.x
+                                wy = point_world.point.y
+
+                                # Avoid duplicates (optional but recommended)
+                                if not any((wx - x)**2 + (wy - y)**2 < 1.0**2 for x, y in self.world_cones):
+                                    self.world_cones.append((wx, wy))
+
+                            except Exception as e:
+                                print("TF failed:", e)
+
 
                 det.results.append(hyp)
                 det_array.detections.append(det)
@@ -120,6 +167,23 @@ class YOLOv8Node(Node):
 
                     cv2.putText(frame, display_text, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        if self.world_cones:
+            xs = [p[0] for p in self.world_cones]
+            zs = [p[1] for p in self.world_cones]
+
+            self.ax.clear()
+
+            self.ax.set_xlabel("X (meters)")
+            self.ax.set_ylabel("Z (meters)")
+            self.ax.set_aspect('equal', 'box')
+            self.ax.set_title("Cone Map (Top View)")
+            self.ax.set_xlim(-10, 10)
+            self.ax.set_ylim(-10, 10)
+            self.ax.scatter(zs, xs, c='orange')
+            print("gello")
+            plt.draw()
+            plt.pause(0.001)
+            # self.cone_positions.clear()
 
         self.pub.publish(det_array)
 
