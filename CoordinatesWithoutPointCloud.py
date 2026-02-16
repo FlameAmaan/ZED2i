@@ -144,7 +144,7 @@ class YOLOv8Node(Node):
                                 wy = point_world.point.y
 
                                 # Avoid duplicates (optional but recommended)
-                                if not any((wx - x)**2 + (wy - y)**2 < 1.0**2 for x, y in self.world_cones):
+                                if not any((wx - x)**2 + (wy - y)**2 < 0.5**2 for x, y in self.world_cones): #lower the cone detection radius
                                     self.world_cones.append((wx, wy))
 
                             except Exception as e:
