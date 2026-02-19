@@ -22,6 +22,7 @@ class YOLOv8Node(Node):
     def __init__(self):
 
         super().__init__('yolov8_detector')
+        self.frame_count = 0
         self.fx = None
         self.fy = None
         self.cx = None
@@ -79,6 +80,9 @@ class YOLOv8Node(Node):
 
     def callback(self, msg:Image):
         self.get_logger().info("RGB received")
+        self.frame_count += 1
+        if self.frame_count % 3 != 0:
+            return
 
         #Main RGB callback for detection
         if self.fx is None:
@@ -86,6 +90,7 @@ class YOLOv8Node(Node):
             return
 
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
         results = self.model.predict(source=frame, conf=self.conf, verbose=False)
 
         det_array = Detection2DArray()
@@ -143,9 +148,18 @@ class YOLOv8Node(Node):
                                 wx = point_world.point.x
                                 wy = point_world.point.y
 
-                                # Avoid duplicates (optional but recommended)
-                                if not any((wx - x)**2 + (wy - y)**2 < 0.5**2 for x, y in self.world_cones): #lower the cone detection radius
-                                    self.world_cones.append((wx, wy))
+                                merged = False
+
+                                for i, (x, y, count, old_label) in enumerate(self.world_cones):
+                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.6**2:
+                                        new_x = (x * count + wx) / (count + 1)
+                                        new_y = (y * count + wy) / (count + 1)
+                                        self.world_cones[i] = (new_x, new_y, count + 1, old_label)
+                                        merged = True
+                                        break
+
+                                if not merged:
+                                    self.world_cones.append((wx, wy, 1, label))
 
                             except Exception as e:
                                 print("TF failed:", e)
@@ -168,8 +182,20 @@ class YOLOv8Node(Node):
                     cv2.putText(frame, display_text, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         if self.world_cones:
-            xs = [p[0] for p in self.world_cones]
-            zs = [p[1] for p in self.world_cones]
+            yellow_x = []
+            yellow_y = []
+            blue_x = []
+            blue_y = []
+
+            for x, y, count, label in self.world_cones:
+                if count > 8:
+                    if "yellow" in label.lower():
+                        yellow_x.append(x)
+                        yellow_y.append(y)
+                    elif "blue" in label.lower():
+                        blue_x.append(x)
+                        blue_y.append(y)
+
 
             self.ax.clear()
 
@@ -177,10 +203,13 @@ class YOLOv8Node(Node):
             self.ax.set_ylabel("Z (meters)")
             self.ax.set_aspect('equal', 'box')
             self.ax.set_title("Cone Map (Top View)")
-            self.ax.set_xlim(-10, 10)
-            self.ax.set_ylim(-10, 10)
-            self.ax.scatter(zs, xs, c='orange')
+            self.ax.set_xlim(-15, 15)
+            self.ax.set_ylim(-15, 15)
+            self.ax.scatter(yellow_x, yellow_y, c='yellow', s=40, label="Yellow Cones")
+            self.ax.scatter(blue_x, blue_y, c='blue', s=40, label="Blue Cones")
             print("gello")
+
+            self.ax.legend()
             plt.draw()
             plt.pause(0.001)
             # self.cone_positions.clear()
