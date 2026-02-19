@@ -151,7 +151,7 @@ class YOLOv8Node(Node):
                                 merged = False
 
                                 for i, (x, y, count, old_label) in enumerate(self.world_cones):
-                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.6**2:
+                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.4**2:
                                         new_x = (x * count + wx) / (count + 1)
                                         new_y = (y * count + wy) / (count + 1)
                                         self.world_cones[i] = (new_x, new_y, count + 1, old_label)
@@ -188,7 +188,7 @@ class YOLOv8Node(Node):
             blue_y = []
 
             for x, y, count, label in self.world_cones:
-                if count > 8:
+                if count > 9:
                     if "yellow" in label.lower():
                         yellow_x.append(x)
                         yellow_y.append(y)
@@ -203,8 +203,8 @@ class YOLOv8Node(Node):
             self.ax.set_ylabel("Z (meters)")
             self.ax.set_aspect('equal', 'box')
             self.ax.set_title("Cone Map (Top View)")
-            self.ax.set_xlim(-15, 15)
-            self.ax.set_ylim(-15, 15)
+            self.ax.set_xlim(-10, 10)
+            self.ax.set_ylim(-10, 10)
             self.ax.scatter(yellow_x, yellow_y, c='yellow', s=40, label="Yellow Cones")
             self.ax.scatter(blue_x, blue_y, c='blue', s=40, label="Blue Cones")
             print("gello")
