@@ -1,133 +1,100 @@
+
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from vision_msgs.msg import Detection2D, Detection2DArray, ObjectHypothesisWithPose
-from sensor_msgs.msg import Image, CameraInfo, Imu
+from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import Header
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
 import numpy as np
-import math
-from nav_msgs.msg import Odometry
+import matplotlib.pyplot as plt
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs
+from geometry_msgs.msg import PointStamped
+from rclpy.duration import Duration
+from rclpy.time import Time
 
-def quaternion_to_euler(x, y, z, w):
-    """Convert quaternion (x,y,z,w) to roll, pitch, yaw in radians"""
-    sinr_cosp = 2.0 * (w * x + y * z)
-    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
 
-    sinp = 2.0 * (w * y - z * x)
-    if abs(sinp) >= 1:
-        pitch = math.copysign(math.pi / 2, sinp)
-    else:
-        pitch = math.asin(sinp)
 
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-
-    return roll, pitch, yaw
-
-class YOLOv8IMUNode(Node):
+class YOLOv8Node(Node):
     def __init__(self):
-        super().__init__('yolov8_imu_detector')
 
-        # Parameters
-        self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
+        super().__init__('yolov8_detector')
+        self.frame_count = 0
+        self.fx = None
+        self.fy = None
+        self.cx = None
+        self.cy = None
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.world_cones = []
+
+        plt.ion()
+        self.fig, self.ax = plt.subplots()
+        self.ax.set_xlabel("X (meters)")
+        self.ax.set_ylabel("Z (meters)")
+        self.ax.set_title("Cone Map (Top View)")
+        self.ax.set_xlim(-5, 5)
+        self.ax.set_ylim(0, 10)
+        self.scatter = self.ax.scatter([], [])
+        self.cone_positions = []
+
+        self.declare_parameter('image_topic', '/zed/zed_node/rgb/color/rect/image')
         self.declare_parameter('depth_topic', '/zed/zed_node/depth/depth_registered')
-        self.declare_parameter('camera_info_topic', '/zed/zed_node/rgb/camera_info')
-        self.declare_parameter('imu_topic', '/zed/zed_node/imu/data')
-        self.declare_parameter('model_path', '/home/flameamaan/ros2_ws/src/ZED2i/yolov8_best_FineTune.pt')
+        self.declare_parameter('camera_info_topic', '/zed/zed_node/rgb/color/rect/image/camera_info')
+        self.declare_parameter('model_path', '//home/flame/ZED2i/yolov8_best_FineTune.pt')
         self.declare_parameter('conf', 0.25)
         self.declare_parameter('show', True)
-
-        self.image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
-        self.depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
-        self.camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
-        self.imu_topic = self.get_parameter('imu_topic').get_parameter_value().string_value
+        image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
+        depth_topic = self.get_parameter('depth_topic').get_parameter_value().string_value
+        camera_info_topic = self.get_parameter('camera_info_topic').get_parameter_value().string_value
         model_path = self.get_parameter('model_path').get_parameter_value().string_value
         self.conf = float(self.get_parameter('conf').value)
         self.show = bool(self.get_parameter('show').value)
-        self.camera_position = np.zeros(3)  # t_cam: x, y, z
-        self.create_subscription(Odometry, '/zed/zed_node/odom', self.odom_callback, 10)
-        # YOLO model
+
         self.model = YOLO(model_path)
         self.class_names = self.model.names
 
         self.bridge = CvBridge()
         self.depth_frame = None
-        self.fx = None
-        self.fy = None
-        self.cx = None
-        self.cy = None
 
-        # IMU orientation
-        self.roll = 0.0
-        self.pitch = 0.0
-        self.yaw = 0.0
+        self.create_subscription(Image, image_topic, self.callback, 10)
+        self.create_subscription(Image, depth_topic, self.depth_callback, 10)
 
-        # Subscribers
-        self.create_subscription(Image, self.image_topic, self.callback, 10)
-        self.create_subscription(Image, self.depth_topic, self.depth_callback, 10)
-        self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_callback, 1)
-        self.create_subscription(Imu, self.imu_topic, self.imu_callback, 10)
-
-        # Publisher
         self.pub = self.create_publisher(Detection2DArray, '/yolo/detections', 10)
-
-    def imu_callback(self, msg: Imu):
-        self.roll, self.pitch, self.yaw = quaternion_to_euler(
-            msg.orientation.x,
-            msg.orientation.y,
-            msg.orientation.z,
-            msg.orientation.w
-        )
-    def odom_callback(self, msg: Odometry):
-    # Camera position in world frame
-        self.camera_position[0] = msg.pose.pose.position.x
-        self.camera_position[1] = msg.pose.pose.position.y
-        self.camera_position[2] = msg.pose.pose.position.z
-
-    # Optional: combine rotation from odometry if you prefer
+        self.create_subscription(CameraInfo, camera_info_topic, self.camera_info_callback, 1)
 
     def camera_info_callback(self, msg: CameraInfo):
-        self.fx = msg.p[0]
-        self.fy = msg.p[5]
-        self.cx = msg.p[2]
-        self.cy = msg.p[6]
+        #get intrinsics 
+        self.fx=msg.p[0]
+        self.fy=msg.p[5]
+        self.cx=msg.p[2]
+        self.cy=msg.p[6]
 
     def depth_callback(self, msg):
+        # Convert depth image to cv2
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
-    def callback(self, msg: Image):
+    def callback(self, msg:Image):
+        self.get_logger().info("RGB received")
+        self.frame_count += 1
+        if self.frame_count % 3 != 0:
+            return
+
+        #Main RGB callback for detection
         if self.fx is None:
             self.get_logger().warn("Waiting for camera intrinsics...")
             return
 
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
         results = self.model.predict(source=frame, conf=self.conf, verbose=False)
 
         det_array = Detection2DArray()
         det_array.header = Header(stamp=msg.header.stamp, frame_id=msg.header.frame_id)
-
-        # Build rotation matrix from IMU
-        Rx = np.array([
-            [1, 0, 0],
-            [0, np.cos(self.roll), -np.sin(self.roll)],
-            [0, np.sin(self.roll), np.cos(self.roll)]
-        ])
-        Ry = np.array([
-            [np.cos(self.pitch), 0, np.sin(self.pitch)],
-            [0, 1, 0],
-            [-np.sin(self.pitch), 0, np.cos(self.pitch)]
-        ])
-        Rz = np.array([
-            [np.cos(self.yaw), -np.sin(self.yaw), 0],
-            [np.sin(self.yaw), np.cos(self.yaw), 0],
-            [0, 0, 1]
-        ])
-        R_imu = Rz @ Ry @ Rx
 
         for r in results:
             for box in r.boxes:
@@ -143,43 +110,109 @@ class YOLOv8IMUNode(Node):
                 det.bbox.size_x = float(x2 - x1)
                 det.bbox.size_y = float(y2 - y1)
 
-                # Hypothesis with pose
+                # Hypothesis with pose(for detection)
                 hyp = ObjectHypothesisWithPose()
                 hyp.hypothesis.class_id = label
-                hyp.hypothesis.score = conf
+                hyp.hypothesis.score = conf 
 
-                # Depth to 3D (camera frame)
+                # Depth to 3D
                 if self.depth_frame is not None:
                     u, v = int(det.bbox.center.position.x), int(det.bbox.center.position.y)
                     if 0 <= v < self.depth_frame.shape[0] and 0 <= u < self.depth_frame.shape[1]:
-                        dist = float(self.depth_frame[v, u])
+                        dist = float(self.depth_frame[v, u])  # meters
                         if dist > 0:
                             X = (u - self.cx) / self.fx
                             Y = (v - self.cy) / self.fy
                             Z = 1.0
-                            point_cam = np.array([X, Y, Z])
-                            point_cam = point_cam / np.linalg.norm(point_cam) * dist
+                            Coord = np.array([X, Y, Z])
+                            Coord = Coord / np.linalg.norm(Coord) * dist
+                            a_x, a_y, a_z = Coord
+                            hyp.pose.pose.position.x = float(a_x)
+                            hyp.pose.pose.position.y = float(a_y)
+                            hyp.pose.pose.position.z = float(a_z)
+                            point_cam = PointStamped()
+                            point_cam.header.frame_id = msg.header.frame_id
+                            point_cam.header.stamp = Time().to_msg()
 
-                            # Transform to world frame using IMU
-                            point_world = R_imu @ point_cam + self.camera_position
-                            a_x, a_y, a_z = point_world
+                            point_cam.point.x = float(a_x)
+                            point_cam.point.y = float(a_y)
+                            point_cam.point.z = float(a_z)
 
-                            hyp.pose.pose.position.x = a_x
-                            hyp.pose.pose.position.y = a_y
-                            hyp.pose.pose.position.z = a_z
+                            try:
+                                point_world = self.tf_buffer.transform(
+                                    point_cam,
+                                    "map",
+                                    timeout=Duration(seconds=0.1)
+                                )
+
+                                wx = point_world.point.x
+                                wy = point_world.point.y
+
+                                merged = False
+
+                                for i, (x, y, count, old_label) in enumerate(self.world_cones):
+                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.4**2:
+                                        new_x = (x * count + wx) / (count + 1)
+                                        new_y = (y * count + wy) / (count + 1)
+                                        self.world_cones[i] = (new_x, new_y, count + 1, old_label)
+                                        merged = True
+                                        break
+
+                                if not merged:
+                                    self.world_cones.append((wx, wy, 1, label))
+
+                            except Exception as e:
+                                print("TF failed:", e)
+
 
                 det.results.append(hyp)
                 det_array.detections.append(det)
 
                 if self.show:
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    if hyp.pose.pose.position.z: 
-                        X, Y, Z = hyp.pose.pose.position.x, hyp.pose.pose.position.y, hyp.pose.pose.position.z
-                        display_text = f"{label}  Z={Z:.2f}m  ({X:.2f},{Y:.2f},{Z:.2f})"
+
+                    if hyp.pose.pose.position.z!=0: 
+                        X = hyp.pose.pose.position.x
+                        Y = hyp.pose.pose.position.y
+                        dist = hyp.pose.pose.position.z
+                        display_text = f"{label}  Z={dist:.2f}m  ({X:.2f},{Y:.2f},{dist:.2f})"  #X->left-right, Y->down-up, Z->forward
                     else:
                         display_text = f"{label}  Z=?"
+
                     cv2.putText(frame, display_text, (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        if self.world_cones:
+            yellow_x = []
+            yellow_y = []
+            blue_x = []
+            blue_y = []
+
+            for x, y, count, label in self.world_cones:
+                if count > 9:
+                    if "yellow" in label.lower():
+                        yellow_x.append(x)
+                        yellow_y.append(y)
+                    elif "blue" in label.lower():
+                        blue_x.append(x)
+                        blue_y.append(y)
+
+
+            self.ax.clear()
+
+            self.ax.set_xlabel("X (meters)")
+            self.ax.set_ylabel("Z (meters)")
+            self.ax.set_aspect('equal', 'box')
+            self.ax.set_title("Cone Map (Top View)")
+            self.ax.set_xlim(-10, 10)
+            self.ax.set_ylim(-10, 10)
+            self.ax.scatter(yellow_x, yellow_y, c='yellow', s=40, label="Yellow Cones")
+            self.ax.scatter(blue_x, blue_y, c='blue', s=40, label="Blue Cones")
+            print("gello")
+
+            self.ax.legend()
+            plt.draw()
+            plt.pause(0.001)
+            # self.cone_positions.clear()
 
         self.pub.publish(det_array)
 
@@ -187,11 +220,12 @@ class YOLOv8IMUNode(Node):
             cv2.imshow("YOLOv8 Detections with Depth & 3D", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 rclpy.shutdown()
+        
 
 
 def main():
     rclpy.init()
-    node = YOLOv8IMUNode()
+    node = YOLOv8Node()
     rclpy.spin(node)
     node.destroy_node()
     cv2.destroyAllWindows()
