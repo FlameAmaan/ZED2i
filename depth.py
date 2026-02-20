@@ -14,7 +14,7 @@ class YOLOv8Node(Node):
 
         self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
         self.declare_parameter('depth_topic', '/zed/zed_node/depth/depth_registered')
-        self.declare_parameter('model_path', '/home/flame/ros2_ws/src/object_Detector/best.pt')
+        self.declare_parameter('model_path', '/home/flame/ZED2i/yolov8_best_FineTune.pt')
         self.declare_parameter('conf', 0.25)
         self.declare_parameter('show', True)
 

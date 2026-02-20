@@ -79,12 +79,7 @@ class YOLOv8Node(Node):
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
     def callback(self, msg:Image):
-        self.get_logger().info("RGB received")
-        self.frame_count += 1
-        if self.frame_count % 3 != 0:
-            return
-
-        #Main RGB callback for detection
+        print("RGB frame:", msg.header.frame_id)
         if self.fx is None:
             self.get_logger().warn("Waiting for camera intrinsics...")
             return
@@ -119,8 +114,10 @@ class YOLOv8Node(Node):
                 if self.depth_frame is not None:
                     u, v = int(det.bbox.center.position.x), int(det.bbox.center.position.y)
                     if 0 <= v < self.depth_frame.shape[0] and 0 <= u < self.depth_frame.shape[1]:
-                        dist = float(self.depth_frame[v, u])  # meters
-                        if dist > 0:
+                        dist = float(self.depth_frame[v, u])
+                        max_range=6
+
+                        if 0 < dist < max_range:
                             X = (u - self.cx) / self.fx
                             Y = (v - self.cy) / self.fy
                             Z = 1.0
@@ -131,19 +128,25 @@ class YOLOv8Node(Node):
                             hyp.pose.pose.position.y = float(a_y)
                             hyp.pose.pose.position.z = float(a_z)
                             point_cam = PointStamped()
-                            point_cam.header.frame_id = "zed_camera_center"
-                            point_cam.header.stamp = Time().to_msg()
-
+                            point_cam.header.frame_id = msg.header.frame_id
+                            # point_cam.header.stamp = rclpy.time.Time(seconds=0).to_msg()
                             point_cam.point.x = float(a_x)
                             point_cam.point.y = float(a_y)
                             point_cam.point.z = float(a_z)
 
                             try:
-                                point_world = self.tf_buffer.transform(
-                                    point_cam,
+                                transform = self.tf_buffer.lookup_transform(
                                     "map",
+                                    msg.header.frame_id,
+                                    rclpy.time.Time(),
                                     timeout=Duration(seconds=0.1)
                                 )
+
+                                point_world = tf2_geometry_msgs.do_transform_point(
+                                    point_cam,
+                                    transform
+                                )
+
 
                                 wx = point_world.point.x
                                 wy = point_world.point.y
@@ -151,7 +154,7 @@ class YOLOv8Node(Node):
                                 merged = False
 
                                 for i, (x, y, count, old_label) in enumerate(self.world_cones):
-                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.4**2:
+                                    if label == old_label and (wx - x)**2 + (wy - y)**2 < 0.1**2:
                                         new_x = (x * count + wx) / (count + 1)
                                         new_y = (y * count + wy) / (count + 1)
                                         self.world_cones[i] = (new_x, new_y, count + 1, old_label)
@@ -188,7 +191,7 @@ class YOLOv8Node(Node):
             blue_y = []
 
             for x, y, count, label in self.world_cones:
-                if count > 9:
+                if count > 5:
                     if "yellow" in label.lower():
                         yellow_x.append(x)
                         yellow_y.append(y)
@@ -207,8 +210,6 @@ class YOLOv8Node(Node):
             self.ax.set_ylim(-10, 10)
             self.ax.scatter(yellow_x, yellow_y, c='yellow', s=40, label="Yellow Cones")
             self.ax.scatter(blue_x, blue_y, c='blue', s=40, label="Blue Cones")
-            print("gello")
-
             self.ax.legend()
             plt.draw()
             plt.pause(0.001)
@@ -217,6 +218,7 @@ class YOLOv8Node(Node):
         self.pub.publish(det_array)
 
         if self.show:
+            print("About to show frame")
             cv2.imshow("YOLOv8 Detections with Depth & 3D", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 rclpy.shutdown()
